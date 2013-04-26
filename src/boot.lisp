@@ -82,6 +82,7 @@
 
 (defmacro defun (name args &rest body)
   `(progn
+     
      (fset ',name
            (named-lambda ,(symbol-name name) ,args
              ,@(if (and (stringp (car body)) (not (null (cdr body))))
@@ -120,7 +121,9 @@
 (defun 1+ (x) (+ x 1))
 (defun 1- (x) (- x 1))
 (defun zerop (x) (= x 0))
-(defun truncate (x y) (floor (/ x y)))
+
+(defun truncate (x &optional (y 1))
+  (floor (/ x y)))
 
 (defun eql (x y) (eq x y))
 
@@ -154,11 +157,25 @@
 
 ;; Basic macros
 
-(defmacro incf (x &optional (delta 1))
-  `(setq ,x (+ ,x ,delta)))
+(defmacro incf (place &optional (delta 1))
+  (multiple-value-bind (dummies vals newval setter getter)
+      (get-setf-expansion place)
+    (let ((d (gensym)))
+      `(let* (,@(mapcar #'list dummies vals)
+              (,d ,delta)
+                (,(car newval) (+ ,getter ,d))
+                ,@(cdr newval))
+         ,setter))))
 
-(defmacro decf (x &optional (delta 1))
-  `(setq ,x (- ,x ,delta)))
+(defmacro decf (place &optional (delta 1))
+  (multiple-value-bind (dummies vals newval setter getter)
+      (get-setf-expansion place)
+    (let ((d (gensym)))
+      `(let* (,@(mapcar #'list dummies vals)
+              (,d ,delta)
+              (,(car newval) (- ,getter ,d))
+              ,@(cdr newval))
+         ,setter))))
 
 (defmacro push (x place)
   (multiple-value-bind (dummies vals newval setter getter)
@@ -197,12 +214,16 @@
 
 (defmacro cond (&rest clausules)
   (if (null clausules)
-      nil
-      (if (eq (caar clausules) t)
-          `(progn ,@(cdar clausules))
-          `(if ,(caar clausules)
-               (progn ,@(cdar clausules))
-               (cond ,@(cdr clausules))))))
+    nil
+    (if (eq (caar clausules) t)
+      `(progn ,@(cdar clausules))
+      (let ((test-symbol (gensym)))
+        `(let ((,test-symbol ,(caar clausules)))
+           (if ,test-symbol
+             ,(if (null (cdar clausules))
+                test-symbol
+                `(progn ,@(cdar clausules)))
+             (cond ,@(cdr clausules))))))))
 
 (defmacro case (form &rest clausules)
   (let ((!form (gensym)))
@@ -659,6 +680,8 @@
                          `((,(ecase (car c)
                                     (integer 'integerp)
                                     (cons 'consp)
+                                    (symbol 'symbolp)
+                                    (array 'arrayp)
                                     (string 'stringp)
                                     (atom 'atom)
                                     (null 'null))
@@ -844,6 +867,15 @@
   (let ((exports (%package-external-symbols package)))
     (dolist (symb symbols t)
       (oset exports (symbol-name symb) symb))))
+
+
+(defconstant internal-time-units-per-second 1000) 
+
+(defun get-internal-real-time ()
+  (get-internal-real-time))
+
+(defun get-unix-time ()
+  (truncate (/ (get-internal-real-time) 1000)))
 
 (defun get-universal-time ()
   (+ (get-unix-time) 2208988800))

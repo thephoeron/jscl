@@ -527,56 +527,56 @@
     output))
 
 
-(defvar *literal-symbols* nil)
+(defvar *literal-table* nil)
 (defvar *literal-counter* 0)
 
 (defun genlit ()
   (code "l" (incf *literal-counter*)))
+
+(defun dump-symbol (symbol)
+  #+common-lisp
+  (let ((package (symbol-package symbol)))
+    (if (eq package (find-package "KEYWORD"))
+        (code "{name: \"" (escape-string (symbol-name symbol))
+              "\", 'package': '" (package-name package) "'}")
+        (code "{name: \"" (escape-string (symbol-name symbol)) "\"}")))
+  #+jscl
+  (let ((package (symbol-package symbol)))
+    (if (null package)
+        (code "{name: \"" (escape-string (symbol-name symbol)) "\"}")
+        (ls-compile `(intern ,(symbol-name symbol) ,(package-name package))))))
+
+(defun dump-cons (cons)
+  (let ((head (butlast cons))
+        (tail (last cons)))
+    (code "QIList("
+          (join-trailing (mapcar (lambda (x) (literal x t)) head) ",")
+          (literal (car tail) t)
+          ","
+          (literal (cdr tail) t)
+          ")")))
+
+(defun dump-array (array)
+  (let ((elements (vector-to-list array)))
+    (concat "[" (join (mapcar #'literal elements) ", ") "]")))
 
 (defun literal (sexp &optional recursive)
   (cond
     ((integerp sexp) (integer-to-string sexp))
     ((floatp sexp) (float-to-string sexp))
     ((stringp sexp) (code "\"" (escape-string sexp) "\""))
-    ((symbolp sexp)
-     (or (cdr (assoc sexp *literal-symbols*))
-	 (let ((v (genlit))
-	       (s #+common-lisp
-                 (let ((package (symbol-package sexp)))
-                   (if (eq package (find-package "KEYWORD"))
-                       (code "{name: \"" (escape-string (symbol-name sexp))
-                             "\", 'package': '" (package-name package) "'}")
-                       (code "{name: \"" (escape-string (symbol-name sexp)) "\"}")))
-                 #+jscl
-                 (let ((package (symbol-package sexp)))
-                   (if (null package)
-                       (code "{name: \"" (escape-string (symbol-name sexp)) "\"}")
-                       (ls-compile `(intern ,(symbol-name sexp) ,(package-name package)))))))
-	   (push (cons sexp v) *literal-symbols*)
-	   (toplevel-compilation (code "var " v " = " s))
-	   v)))
-    ((consp sexp)
-     (let* ((head (butlast sexp))
-            (tail (last sexp))
-            (c (code "QIList("
-                     (join-trailing (mapcar (lambda (x) (literal x t)) head) ",")
-                     (literal (car tail) t)
-                     ","
-                     (literal (cdr tail) t)
-                     ")")))
-       (if recursive
-	   c
-	   (let ((v (genlit)))
-             (toplevel-compilation (code "var " v " = " c))
-             v))))
-    ((arrayp sexp)
-     (let ((elements (vector-to-list sexp)))
-       (let ((c (concat "[" (join (mapcar #'literal elements) ", ") "]")))
-	 (if recursive
-	     c
-	     (let ((v (genlit)))
-	       (toplevel-compilation (code "var " v " = " c))
-	       v)))))))
+    (t
+     (or (cdr (assoc sexp *literal-table*))
+         (let ((dumped (typecase sexp
+                         (symbol (dump-symbol sexp))
+                         (cons (dump-cons sexp))
+                         (array (dump-array sexp)))))
+           (if (and recursive (not (symbolp sexp)))
+               dumped
+               (let ((jsvar (genlit)))
+                 (push (cons sexp jsvar) *literal-table*)
+                 (toplevel-compilation (code "var " jsvar " = " dumped))
+                 jsvar)))))))
 
 (define-compilation quote (sexp)
   (literal sexp))
@@ -1476,13 +1476,13 @@
   (type-check (("string" "string" string))
     (if *multiple-value-p*
         (js!selfcall
-          "var v = eval.apply(window, [string]);" *newline*
+          "var v = globalEval(string);" *newline*
           "if (typeof v !== 'object' || !('multiple-value' in v)){" *newline*
           (indent "v = [v];" *newline*
                   "v['multiple-value'] = true;" *newline*)
           "}" *newline*
           "return values.apply(this, v);" *newline*)
-        "eval.apply(window, [string])")))
+        "globalEval(string)")))
 
 (define-builtin error (string)
   (js!selfcall "throw " string ";" *newline*))
@@ -1536,8 +1536,8 @@
     "if (i < 0 || i >= x.length) throw 'Out of range';" *newline*
     "return x[i] = " value ";" *newline*))
 
-(define-builtin get-unix-time ()
-  (code "(Math.round(new Date() / 1000))"))
+(define-builtin get-internal-real-time ()
+  "(new Date()).getTime()")
 
 (define-builtin values-array (array)
   (if *multiple-value-p*

@@ -64,7 +64,7 @@
 
 (defun bootstrap ()
   (setq *environment* (make-lexenv))
-  (setq *literal-symbols* nil)
+  (setq *literal-table* nil)
   (setq *variable-counter* 0
         *gensym-counter* 0
         *literal-counter* 0
@@ -73,4 +73,19 @@
     (write-string (read-whole-file (source-pathname "prelude.js")) out)
     (dolist (input *source*)
       (when (member (cadr input) '(:target :both))
-        (ls-compile-file (source-pathname (car input) :type "lisp") out)))))
+        (ls-compile-file (source-pathname (car input) :type "lisp") out))))
+  ;; Tests
+  (with-open-file (out "tests.js" :direction :output :if-exists :supersede)
+    (dolist (input (append (directory "tests.lisp")
+                           (directory "tests/*.lisp")
+                           (directory "tests-report.lisp"))) 
+      (ls-compile-file input out))))
+
+
+;;; Run the tests in the host Lisp implementation. It is a quick way
+;;; to improve the level of trust of the tests.
+(defun run-tests-in-host ()
+  (dolist (input (append (directory "tests.lisp")
+                         (directory "tests/*.lisp")
+                         (directory "tests-report.lisp")))
+    (load input)))
