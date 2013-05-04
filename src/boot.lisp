@@ -183,18 +183,21 @@
     `(let ((,!form ,form))
        (cond
          ,@(mapcar (lambda (clausule)
-                     (if (eq (car clausule) t)
-                         clausule
+                     (if (or (eq (car clausule) t)
+                             (eq (car clausule) 'otherwise))
+                         `(t ,@(cdr clausule))
                          `((eql ,!form ',(car clausule))
                            ,@(cdr clausule))))
                    clausules)))))
 
 (defmacro ecase (form &rest clausules)
-  `(case ,form
-     ,@(append
-        clausules
-        `((t
-           (error "ECASE expression failed."))))))
+  (let ((g!form (gensym)))
+    `(let ((,g!form ,form))
+       (case ,g!form
+         ,@(append
+            clausules
+            `((t
+               (error "ECASE expression failed for the object `~S'." ,g!form))))))))
 
 (defmacro and (&rest forms)
   (cond
@@ -251,7 +254,7 @@
             (append (cdr list1) list2))))
 
 (defun append (&rest lists)
-  (!reduce #'append-two lists))
+  (!reduce #'append-two lists nil))
 
 (defun revappend (list1 list2)
   (while list1
@@ -279,7 +282,7 @@
     (setq assignments (reverse assignments))
     ;;
     `(let ,(mapcar #'cdr assignments)
-       (setq ,@(!reduce #'append (mapcar #'butlast assignments))))))
+       (setq ,@(!reduce #'append (mapcar #'butlast assignments) nil)))))
 
 (defmacro do (varlist endlist &body body)
   `(block nil
@@ -350,9 +353,14 @@
   (lambda (&rest args)
     x))
 
-(defun code-char (x) x)
-(defun char-code (x) x)
-(defun char= (x y) (= x y))
+(defun code-char (x)
+  (code-char x))
+
+(defun char-code (x)
+  (char-code x))
+
+(defun char= (x y)
+  (eql x y))
 
 (defun integerp (x)
   (and (numberp x) (= (floor x) x)))
@@ -365,11 +373,6 @@
 
 (defun atom (x)
   (not (consp x)))
-
-(defun find (item list &key key (test #'eql))
-  (dolist (x list)
-    (when (funcall test (funcall key x) item)
-      (return x))))
 
 (defun remove (x list)
   (cond
@@ -399,9 +402,13 @@
     (t
      (remove-if-not func (cdr list)))))
 
+(defun alpha-char-p (x)
+  (or (<= (char-code #\a) (char-code x) (char-code #\z))
+      (<= (char-code #\Z) (char-code x) (char-code #\Z))))
+
 (defun digit-char-p (x)
-  (if (and (<= #\0 x) (<= x #\9))
-      (- x #\0)
+  (if (and (<= (char-code #\0) (char-code x) (char-code #\9)))
+      (- (char-code x) (char-code #\0))
       nil))
 
 (defun digit-char (weight)
@@ -409,13 +416,9 @@
        (char "0123456789" weight)))
 
 (defun subseq (seq a &optional b)
-  (cond
-    ((stringp seq)
-     (if b
-         (slice seq a b)
-         (slice seq a)))
-    (t
-     (error "Unsupported argument."))))
+  (if b
+      (slice seq a b)
+      (slice seq a)))
 
 (defmacro do-sequence (iteration &body body)
   (let ((seq (gensym))
@@ -436,6 +439,16 @@
          (t
           (error "type-error!"))))))
 
+(defun find (item sequence &key (key #'identity) (test #'eql))
+  (do-sequence (x sequence)
+    (when (funcall test (funcall key x) item)
+      (return x))))
+
+(defun find-if (predicate sequence &key (key #'identity))
+  (do-sequence (x sequence)
+    (when (funcall predicate (funcall key x))
+      (return x))))
+
 (defun some (function seq)
   (do-sequence (elt seq)
     (when (funcall function elt)
@@ -455,11 +468,6 @@
       (incf pos))
     pos))
 
-(defun string (x)
-  (cond ((stringp x) x)
-        ((symbolp x) (symbol-name x))
-        (t (char-to-string x))))
-
 (defun equal (x y)
   (cond
     ((eql x y) t)
@@ -467,18 +475,9 @@
      (and (consp y)
           (equal (car x) (car y))
           (equal (cdr x) (cdr y))))
-    ((arrayp x)
-     (and (arrayp y)
-          (let ((n (length x)))
-            (when (= (length y) n)
-              (dotimes (i n)
-                (unless (equal (aref x i) (aref y i))
-                  (return-from equal nil)))
-              t))))
+    ((stringp x)
+     (and (stringp y) (string= x y)))
     (t nil)))
-
-(defun string= (s1 s2)
-  (equal s1 s2))
 
 (defun fdefinition (x)
   (cond
@@ -487,7 +486,7 @@
     ((symbolp x)
      (symbol-function x))
     (t
-     (error "Invalid function"))))
+     (error "Invalid function `~S'." x))))
 
 (defun disassemble (function)
   (write-line (lambda-code (fdefinition function)))
@@ -501,7 +500,7 @@
        (oget func "docstring")))
     (variable
      (unless (symbolp x)
-       (error "Wrong argument type! it should be a symbol"))
+       (error "The type of documentation `~S' is not a symbol." type))
      (oget x "vardoc"))))
 
 (defmacro multiple-value-bind (variables value-from &body body)
@@ -525,7 +524,7 @@
                 `(,value)
                 `(setq ,place ,value)
                 place))
-      (let ((place (ls-macroexpand-1 place)))
+      (let ((place (!macroexpand-1 place)))
         (let* ((access-fn (car place))
                (expander (cdr (assoc access-fn *setf-expanders*))))
           (when (null expander)
@@ -534,7 +533,7 @@
 
 (defmacro define-setf-expander (access-fn lambda-list &body body)
   (unless (symbolp access-fn)
-    (error "ACCESS-FN must be a symbol."))
+    (error "ACCESS-FN `~S' must be a symbol." access-fn))
   `(progn (push (cons ',access-fn (lambda ,lambda-list ,@body))
                 *setf-expanders*)
           ',access-fn))
@@ -546,7 +545,7 @@
     ((null (cdr pairs))
      (error "Odd number of arguments to setf."))
     ((null (cddr pairs))
-     (let ((place (ls-macroexpand-1 (first pairs)))
+     (let ((place (!macroexpand-1 (first pairs)))
            (value (second pairs)))
        (multiple-value-bind (vars vals store-vars writer-form)
            (get-setf-expansion place)
@@ -600,10 +599,14 @@
   (+ (get-unix-time) 2208988800))
 
 (defun concat (&rest strs)
-  (!reduce #'concat-two strs :initial-value ""))
+  (!reduce #'concat-two strs ""))
 
 (defun values-list (list)
   (values-array (list-to-vector list)))
 
 (defun values (&rest args)
   (values-list args))
+
+(defun error (fmt &rest args)
+  (%throw (apply #'format nil fmt args)))
+

@@ -25,11 +25,11 @@ function forcemv (x) {
 var values = mv;
 
 function checkArgsAtLeast(args, n){
-    if (args.length < n) throw 'too few arguments';
+    if (args < n) throw 'too few arguments';
 }
 
 function checkArgsAtMost(args, n){
-    if (args.length > n) throw 'too many arguments';
+    if (args > n) throw 'too many arguments';
 }
 
 function checkArgs(args, n){
@@ -49,4 +49,50 @@ function QIList(){
         }
         return r;
     }
+}
+
+
+// Create and return a lisp string for the Javascript string STRING.
+function make_lisp_string (string){
+    var array = string.split("");
+    array.type = 'character'
+    return array;
+}
+
+function xstring(x){ return x.join(''); }
+
+
+function Symbol(name, package_name){
+    this.name = name;
+    if (package_name)
+        this['package'] = package_name;
+}
+
+function lisp_to_js (x) {
+    if (typeof x == 'object' && 'length' in x && x.type == 'character')
+        return xstring(x);
+    else if (typeof x == 'function'){
+        // Trampoline calling the Lisp function
+        return (function(){
+            var args = Array.prototype.slice.call(arguments);
+            for (var i in args)
+                args[i] = js_to_lisp(args[i]);
+            return lisp_to_js(x.apply(this, [pv, arguments.length].concat(args)));
+        });
+    }
+    else return x;
+}
+
+function js_to_lisp (x) {
+    if (typeof x == 'string')
+        return make_lisp_string(x);
+    else if (typeof x == 'function'){
+        // Trampoline calling the JS function
+        return (function(values, nargs){
+            var args = Array.prototype.slice.call(arguments, 2);
+            for (var i in args)
+                args[i] = lisp_to_js(args[i]);
+            return values(js_to_lisp(x.apply(this, args)));
+        });
+    } else return x;
 }
