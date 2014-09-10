@@ -101,17 +101,14 @@
   `(dolist (,name (get-files *source* ,type '(:relative "src")))
      ,@body))
 
-;;; Compile jscl into the host
+;;; Compile and load jscl into the host
 (with-compilation-unit ()
   (do-source input :host
     (multiple-value-bind (fasl warn fail) (compile-file input)
-      (declare (ignore fasl warn))
+      (declare (ignore warn))
       (when fail
-        (error "Compilation of ~A failed." input)))))
-
-;;; Load jscl into the host
-(do-source input :host
-  (load input))
+        (error "Compilation of ~A failed." input))
+      (load fasl))))
 
 (defun read-whole-file (filename)
   (with-open-file (in filename)
@@ -155,7 +152,7 @@
     (late-compile `(setq *literal-counter* ,*literal-counter*))))
 
 
-(defun bootstrap ()
+(defun bootstrap (&optional verbose)
   (let ((*features* (cons :jscl *features*))
         (*package* (find-package "JSCL")))
     (setq *environment* (make-lexenv))
@@ -168,7 +165,7 @@
                          :if-exists :supersede)
       (write-string (read-whole-file (source-pathname "prelude.js")) out)
       (do-source input :target
-        (!compile-file input out))
+        (!compile-file input out :print verbose))
       (dump-global-environment out))
     ;; Tests
     (with-open-file (out (merge-pathnames "tests.js" *base-directory*)

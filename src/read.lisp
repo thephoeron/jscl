@@ -20,6 +20,10 @@
 
 ;;;; Reader
 
+;;; If it is not NIL, we do not want to read the expression but just
+;;; ignore it. For example, it is used in conditional reads #+.
+(defvar *read-skip-p* nil)
+
 ;;; The Lisp reader, parse strings and return Lisp objects. The main
 ;;; entry points are `ls-read' and `ls-read-from-string'.
 
@@ -199,6 +203,27 @@
       (setq ch (%read-char stream)))
     string))
 
+
+
+(defun eval-feature-expression (expression)
+  (etypecase expression
+    (keyword
+     (and (find expression *features*) t))
+    (list
+     ;; Macrocharacters for conditional reading #+ and #- bind the
+     ;; current package to KEYWORD so features are correctly
+     ;; interned. For this reason, AND, OR and NOT symbols will be
+     ;; also keyword in feature expressions.
+     (ecase (first expression)
+       (:and
+        (every #'eval-feature-expression (rest expression)))
+       (:or
+        (some #'eval-feature-expression (rest expression)))
+       (:not
+        (destructuring-bind (subexpr) (rest expression)
+          (not (eval-feature-expression subexpr))))))))
+
+
 (defun read-sharp (stream &optional eof-error-p eof-value)
   (%read-char stream)
   (let ((ch (%read-char stream)))
@@ -241,14 +266,14 @@
            ((string= cname "newline") #\newline)
            (t (char cname 0)))))
       ((#\+ #\-)
-       (let ((feature (let ((symbol (ls-read stream eof-error-p eof-value t)))
-                        (unless (symbolp symbol)
-                          (error "Invalid feature ~S" symbol))
-                        (intern (string symbol) "KEYWORD"))))
-         (if (eql (char= ch #\+)
-                  (and (find feature *features*) t))
+       (let* ((expression
+               (let ((*package* (find-package :keyword)))
+                 (ls-read stream eof-error-p eof-value t))))
+         
+         (if (eql (char= ch #\+) (eval-feature-expression expression))
              (ls-read stream eof-error-p eof-value t)
-             (prog2 (ls-read stream)
+             (prog2 (let ((*read-skip-p* t))
+                      (ls-read stream))
                  (ls-read stream eof-error-p eof-value t)))))
       ((#\J #\j)
        (unless (char= (%peek-char stream) #\:)
@@ -262,6 +287,16 @@
                (push (subseq descriptor start) subdescriptors)
                `(oget *root* ,@(reverse subdescriptors)))
            (push (subseq descriptor start end) subdescriptors))))
+      (#\|
+       (labels ((read-til-bar-sharpsign ()
+                  (do ((ch (%read-char stream) (%read-char stream)))
+                    ((and (char= ch #\|) (char= (%peek-char stream) #\#))
+                     (%read-char stream))
+                    (when (and (char= ch #\#) (char= (%peek-char stream) #\|))
+                      (%read-char stream)
+                      (read-til-bar-sharpsign)))))
+         (read-til-bar-sharpsign)
+         (ls-read stream eof-error-p eof-value t)))
       (otherwise
        (cond
          ((and ch (digit-char-p ch))
@@ -535,7 +570,8 @@
                (read-sharp stream eof-error-p eof-value))
               (t
                (let ((string (read-escaped-until stream #'terminalp)))
-                 (interpret-token string))))))
+                 (unless *read-skip-p*
+                   (interpret-token string)))))))
       (unless recursive-p
         (fixup-backrefs)
         (setf *labelled-objects* save-labelled-objects)

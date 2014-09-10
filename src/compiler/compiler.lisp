@@ -461,13 +461,13 @@
       (return-from setq (convert nil)))
     (while t
       (cond
-	((null pairs)
+        ((null pairs)
          (return))
-	((null (cdr pairs))
-	 (error "Odd pairs in SETQ"))
-	(t
+        ((null (cdr pairs))
+         (error "Odd pairs in SETQ"))
+        (t
          (push `,(setq-pair (car pairs) (cadr pairs)) result)
-	 (setq pairs (cddr pairs)))))
+         (setq pairs (cddr pairs)))))
     `(progn ,@(reverse result))))
 
 
@@ -540,7 +540,7 @@
                          (cons
                           ;; BOOTSTRAP MAGIC: See the root file
                           ;; jscl.lisp and the function
-                          ;; `dump-global-environment' for futher
+                          ;; `dump-global-environment' for further
                           ;; information.
                           (if (eq (car sexp) *magic-unquote-marker*)
                               (convert (second sexp))
@@ -1036,16 +1036,22 @@
 (define-builtin car (x)
   `(selfcall
     (var (tmp ,x))
-    (return (if (=== tmp ,(convert nil))
-                ,(convert nil)
-                (get tmp "car")))))
+    (if (=== tmp ,(convert nil))
+        (return ,(convert nil))
+        (if (and (== (typeof tmp) "object")
+                 (in "car" tmp))
+            (return (get tmp "car"))
+            (throw "CAR called on non-list argument")))))
 
 (define-builtin cdr (x)
   `(selfcall
     (var (tmp ,x))
-    (return (if (=== tmp ,(convert nil))
-                ,(convert nil)
-                (get tmp "cdr")))))
+    (if (=== tmp ,(convert nil))
+        (return ,(convert nil))
+        (if (and (== (typeof tmp) "object")
+                 (in "cdr" tmp))
+            (return (get tmp "cdr"))
+            (throw "CDR called on non-list argument")))))
 
 (define-builtin rplaca (x new)
   `(selfcall
@@ -1275,6 +1281,9 @@
 (define-raw-builtin oset (value object key &rest keys)
   (convert `(oset* (lisp-to-js ,value) ,object ,key ,@keys)))
 
+(define-builtin js-null-p (x)
+  `(bool (=== ,x null)))
+
 (define-builtin objectp (x)
   `(bool (=== (typeof ,x) "object")))
 
@@ -1466,12 +1475,12 @@
       (t
        (when *compile-print-toplevels*
          (let ((form-string (prin1-to-string sexp)))
-           (format t "Compiling ~a..." (truncate-string form-string))))
+           (format t "Compiling ~a...~%" (truncate-string form-string))))
        (let ((code (convert sexp multiple-value-p)))
          `(progn
             ,@(get-toplevel-compilations)
             ,code))))))
 
 (defun compile-toplevel (sexp &optional multiple-value-p)
-  (with-output-to-string (*standard-output*)
+  (with-output-to-string (*js-output*)
     (js (convert-toplevel sexp multiple-value-p))))
