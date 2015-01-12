@@ -190,14 +190,15 @@
 
 ;;; Special forms
 
-(defvar *compilations* nil)
+(defvar *compilations*
+  (make-hash-table))
 
 (defmacro define-compilation (name args &body body)
   ;; Creates a new primitive `name' with parameters args and
   ;; @body. The body can access to the local environment through the
   ;; variable *ENVIRONMENT*.
-  `(push (list ',name (lambda ,args (block ,name ,@body)))
-         *compilations*))
+  `(setf (gethash ',name *compilations*)
+         (lambda ,args (block ,name ,@body))))
 
 (define-compilation if (condition true &optional false)
   `(if (!== ,(convert condition) ,(convert nil))
@@ -367,10 +368,9 @@
                                    `(!== (property |arguments| (+ i 2)) ,(convert keyword-name))))
                                keyword-arguments))
                      (throw (+ "Unknown keyword argument "
-                               (call |xstring|
-                                     (property
-                                      (property |arguments| (+ i 2))
-                                      "name")))))))))))
+                               (property
+                                (property |arguments| (+ i 2))
+                                "name"))))))))))
 
 (defun parse-lambda-list (ll)
   (values (ll-required-arguments ll)
@@ -501,16 +501,21 @@
   (make-symbol (concat "l" (integer-to-string *literal-counter*))))
 
 (defun dump-symbol (symbol)
-  #-jscl
   (let ((package (symbol-package symbol)))
-    (if (eq package (find-package "KEYWORD"))
-        `(new (call |Symbol| ,(dump-string (symbol-name symbol)) ,(dump-string (package-name package))))
-        `(new (call |Symbol| ,(dump-string (symbol-name symbol))))))
-  #+jscl
-  (let ((package (symbol-package symbol)))
-    (if (null package)
-        `(new (call |Symbol| ,(dump-string (symbol-name symbol))))
-        (convert `(intern ,(symbol-name symbol) ,(package-name package))))))
+    (cond
+      ;; Uninterned symbol
+      ((null package)
+       `(new (call |Symbol| ,(symbol-name symbol))))
+      ;; Special case for bootstrap. For now, we just load all the
+      ;; code with JSCL as the current package. We will compile the
+      ;; JSCL package as CL in the target.
+      #-jscl
+      ((or (eq package (find-package "JSCL"))
+           (eq package (find-package "CL")))
+       `(call |intern| ,(symbol-name symbol)))
+      ;; Interned symbol
+      (t
+       `(call |intern| ,(symbol-name symbol) ,(package-name package))))))
 
 (defun dump-cons (cons)
   (let ((head (butlast cons))
@@ -1012,8 +1017,11 @@
 (define-builtin numberp (x)
   `(bool (== (typeof ,x) "number")))
 
-(define-builtin floor (x)
+(define-builtin %floor (x)
   `(method-call |Math| "floor" ,x))
+
+(define-builtin %ceiling (x)
+  `(method-call |Math| "ceil" ,x))
 
 (define-builtin expt (x y)
   `(method-call |Math| "pow" ,x ,y))
@@ -1069,10 +1077,10 @@
   `(bool (instanceof ,x |Symbol|)))
 
 (define-builtin make-symbol (name)
-  `(new (call |Symbol| ,name)))
+  `(new (call |Symbol| (call |lisp_to_js| ,name))))
 
-(define-builtin symbol-name (x)
-  `(get ,x "name"))
+(define-compilation symbol-name (x)
+  (convert `(oget ,x "name")))
 
 (define-builtin set (symbol value)
   `(= (get ,symbol "value") ,value))
@@ -1091,7 +1099,7 @@
     (var (symbol ,x)
          (value (get symbol "value")))
     (if (=== value undefined)
-        (throw (+ "Variable `" (call |xstring| (get symbol "name")) "' is unbound.")))
+        (throw (+ "Variable `" (get symbol "name") "' is unbound.")))
     (return value)))
 
 (define-builtin symbol-function (x)
@@ -1099,7 +1107,7 @@
     (var (symbol ,x)
          (func (get symbol "fvalue")))
     (if (=== func undefined)
-        (throw (+ "Function `" (call |xstring| (get symbol "name")) "' is undefined.")))
+        (throw (+ "Function `" (get symbol "name") "' is undefined.")))
     (return func)))
 
 (define-builtin lambda-code (x)
@@ -1324,6 +1332,45 @@
             `(%js-vref ,var))))
 
 
+;; Catch any Javascript exception. Note that because all non-local
+;; exit are based on try-catch-finally, it will also catch them. We
+;; could provide a JS function to detect it, so the user could rethrow
+;; the error.
+;; 
+;; (%js-try
+;;  (progn
+;;    )
+;;  (catch (err)
+;;    )
+;;  (finally
+;;   ))
+;; 
+(define-compilation %js-try (form &optional catch-form finally-form)
+  (let ((catch-compilation
+         (and catch-form
+              (destructuring-bind (catch (var) &body body) catch-form
+                (unless (eq catch 'catch)
+                  (error "Bad CATCH clausule `~S'." catch-form))
+                (let* ((*environment* (extend-local-env (list var)))
+                       (tvar (translate-variable var)))
+                  `(catch (,tvar)
+                     (= ,tvar (call |js_to_lisp| ,tvar))
+                     ,(convert-block body t))))))
+        
+        (finally-compilation
+         (and finally-form
+              (destructuring-bind (finally &body body) finally-form
+                (unless (eq finally 'finally)
+                  (error "Bad FINALLY clausule `~S'." finally-form))
+                `(finally
+                  ,(convert-block body))))))
+
+    `(selfcall
+      (try (return ,(convert form)))
+      ,catch-compilation
+      ,finally-compilation)))
+
+
 #-jscl
 (defvar *macroexpander-cache*
   (make-hash-table :test #'eq))
@@ -1435,8 +1482,8 @@
                (args (cdr sexp)))
            (cond
              ;; Special forms
-             ((assoc name *compilations*)
-              (let ((comp (second (assoc name *compilations*))))
+             ((gethash name *compilations*)
+              (let ((comp (gethash name *compilations*)))
                 (apply comp args)))
              ;; Built-in functions
              ((and (assoc name *builtins*)

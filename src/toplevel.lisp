@@ -1,6 +1,6 @@
 ;;; toplevel.lisp ---
 
-;; Copyright (C) 2012, 2013 David Vazquez
+;; Copyright (C) 2012, 2013, 2014 David Vazquez
 ;; Copyright (C) 2012 Raimon Grau
 
 ;; JSCL is free software: you can redistribute it and/or
@@ -250,7 +250,18 @@
 
 (setq *package* *user-package*)
 
-(defvar *root* (%js-vref "window"))
+
+(defun compilation-notice ()
+  #.(multiple-value-bind (second minute hour date month year)
+        (get-decoded-time)
+      (declare (ignore second minute hour))
+      (format nil "built on ~d ~a ~d"
+              date
+              (elt #("" "January" "February" "March" "April" "May" "June"
+                     "July" "August" "September" "October" "November"
+                     "December")
+                   month)
+              year)))
 
 
 (defun load-history ()
@@ -261,35 +272,83 @@
 (defun save-history ()
   (#j:localStorage:setItem "jqhist" (#j:JSON:stringify (#j:jqconsole:GetHistory))))
 
+
+;;; Decides wheater the input the user has entered is completed or we
+;;; should accept one more line.
+(defun indent-level (string)
+  (let ((i 0)
+        (stringp nil)
+        (s (length string))
+        (depth 0))
+
+    (while (< i s)
+      (cond
+        (stringp
+         (case (char string i)
+           (#\\
+            (incf i))
+           (#\"
+            (setq stringp nil)
+            (decf depth))))
+        (t
+         (case (char string i)
+           (#\( (incf depth))
+           (#\) (decf depth))
+           (#\"
+            (incf depth)
+            (setq stringp t)))))
+      (incf i))
+
+    (if (and (zerop depth))
+        nil
+        ;; We should use something based on DEPTH in order to make
+        ;; edition nice, but the behaviour is a bit weird with
+        ;; jqconsole.
+        0)))
+
+
+
 (defun toplevel ()
   (let ((prompt (format nil "~a> " (package-name *package*))))
     (#j:jqconsole:Write prompt "jqconsole-prompt"))
   (flet ((process-input (input)
-           (let* ((form (read-from-string input))
-                  (successp nil)
-                  result)
-             ;; Capture errors. We evaluate the form and set successp
-             ;; to T. However, if a non-local exit happens, we cancel
-             ;; it, so it is not propagated more.
-             (block nil
-               (unwind-protect
-                    (progn
-                      (setq result (multiple-value-list (eval-interactive form)))
-                      (setq successp t))
-                 (return)))
+           ;; Capture unhandled Javascript exceptions. We evaluate the
+           ;; form and set successp to T. However, if a non-local exit
+           ;; happens, we cancel it, so it is not propagated more.
+           (%js-try
 
-             (if successp
-                 (dolist (x result)
-                   (#j:jqconsole:Write (format nil "~S~%" x) "jqconsole-return"))
-                 (#j:jqconsole:Write (format nil "Error occurred~%") "jqconsole-error"))
-
-             (save-history))
+            ;; Capture unhandled Lisp conditeions.
+            (handler-case
+                (let* ((form (read-from-string input))
+                       (results (multiple-value-list (eval-interactive form))))
+                  (dolist (x results)
+                    (#j:jqconsole:Write (format nil "~S~%" x) "jqconsole-return")))
+              (error (err)
+                (#j:jqconsole:Write "ERROR: " "jqconsole-error")
+                (#j:jqconsole:Write (apply #'format nil (!condition-args err)) "jqconsole-error")
+                (#j:jqconsole:Write (string #\newline) "jqconsole-error")))
+            
+            (catch (err)
+              (#j:console:log err)
+              (#j:jqconsole:Write (format nil "ERROR[!]: ~a~%" err) "jqconsole-error")))
+           
+           (save-history)
            (toplevel)))
-    (#j:jqconsole:Prompt t #'process-input)))
+    (#j:jqconsole:Prompt t #'process-input #'indent-level)))
 
 
 (defun init (&rest args)
   (#j:jqconsole:RegisterMatching "(" ")" "parents")
+
+  (format t "Welcome to ~a ~a (~a)~%~%"
+          (lisp-implementation-type)
+          (lisp-implementation-version)
+          (compilation-notice))
+
+  (format t "JSCL is a Common Lisp implementation on Javascript.~%")
+  (%write-string
+   (format nil "For more information, visit the project page at <a href=\"https://github.com/davazp/jscl\">GitHub</a>.~%~%"))
+
   (load-history)
   (toplevel))
 

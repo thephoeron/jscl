@@ -15,20 +15,28 @@
 
 (/debug "loading package.lisp!")
 
-(defvar *package-list* nil)
+(defvar *package-table* #j:packages)
 
 (defun list-all-packages ()
-  (copy-list *package-list*))
+  (let ((packages nil))
+    (map-for-in (lambda (name) (push name packages))
+                *package-table*)
+    packages))
+
+(defun find-package (package-designator)
+  (if (packagep package-designator)
+      package-designator
+      (oget *package-table* (string package-designator))))
 
 (defun %make-package (name use)
+  (when (find-package name)
+    (error "A package namded `~a' already exists." name))
   (let ((package (new)))
     (setf (oget package "packageName") name)
     (setf (oget package "symbols") (new))
     (setf (oget package "exports") (new))
     (setf (oget package "use") use)
-    (if (find name *package-list* :key (lambda (s) (oget s "packageName")) :test #'equal)
-        (error "A package namded `~a' already exists." name)
-        (push package *package-list*))
+    (setf (oget *package-table* name) package)
     package))
 
 (defun resolve-package-list (packages)
@@ -44,18 +52,6 @@
 
 (defun packagep (x)
   (and (objectp x) (in "symbols" x)))
-
-(defun find-package (package-designator)
-  (when (packagep package-designator)
-    (return-from find-package package-designator))
-  (let ((name (string package-designator)))
-    (dolist (package *package-list*)
-      (when (string= (package-name package) name)
-        (return package)))))
-
-(defun find-package-or-fail (package-designator)
-  (or (find-package package-designator)
-      (error "The name `~S' does not designate any package." package-designator)))
 
 (defun package-name (package-designator)
   (let ((package (find-package-or-fail package-designator)))
@@ -73,19 +69,16 @@
   (let ((package (find-package-or-fail package-designator)))
     (oget package "exports")))
 
-(defvar *common-lisp-package*
-  (make-package "CL"))
-
 (defvar *user-package*
-  (make-package "CL-USER" :use (list *common-lisp-package*)))
+  (make-package "CL-USER" :use (list (find-package "CL"))))
 
 (defvar *keyword-package*
-  (make-package "KEYWORD"))
+  (find-package "KEYWORD"))
 
 (defun keywordp (x)
   (and (symbolp x) (eq (symbol-package x) *keyword-package*)))
 
-(defvar *package* *common-lisp-package*)
+(defvar *package* (find-package "CL"))
 
 (defmacro in-package (string-designator)
   `(eval-when (:compile-toplevel :load-toplevel :execute)
@@ -110,22 +103,6 @@
     (if package
         (redefine-package package use)
         (%make-package name use))))
-
-;; This function is used internally to initialize the CL package
-;; with the symbols built during bootstrap.
-(defun %intern-symbol (symbol)
-  (let* ((package
-          (if (in "package" symbol)
-              (find-package-or-fail (oget symbol "package"))
-              *common-lisp-package*))
-         (symbols (%package-symbols package))
-         (exports (%package-external-symbols package)))
-    (setf (oget symbol "package") package)
-    (setf (oget symbols (symbol-name symbol)) symbol)
-    ;; Turn keywords self-evaluated and export them.
-    (when (eq package *keyword-package*)
-      (setf (oget symbol "value") symbol)
-      (setf (oget exports (symbol-name symbol)) symbol))))
 
 (defun find-symbol (name &optional (package *package*))
   (let* ((package (find-package-or-fail package))
@@ -184,12 +161,14 @@
     (%map-external-symbols function used)))
 
 (defun %map-all-symbols (function)
-  (dolist (package *package-list*)
-    (map-for-in function (%package-symbols package))))
+  (map-for-in (lambda (package)
+                (map-for-in function (%package-symbols package)))
+              *package-table*))
 
 (defun %map-all-external-symbols (function)
-  (dolist (package *package-list*)
-    (map-for-in function (%package-external-symbols package))))
+  (map-for-in (lambda (package)
+                (map-for-in function (%package-external-symbols package)))
+              *package-table*))
 
 (defmacro do-symbols ((var &optional (package '*package*) result-form)
                       &body body)
@@ -216,7 +195,9 @@
 
 (defun find-all-symbols (string &optional external-only)
   (let (symbols)
-    (dolist (package *package-list* symbols)
-      (multiple-value-bind (symbol status) (find-symbol string package)
-        (when (if external-only (eq status :external) status)
-          (pushnew symbol symbols :test #'eq))))))
+    (map-for-in (lambda (package)
+                  (multiple-value-bind (symbol status) (find-symbol string package)
+                    (when (if external-only (eq status :external) status)
+                      (pushnew symbol symbols :test #'eq))))
+                *package-table*)
+    symbols))

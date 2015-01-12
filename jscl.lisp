@@ -22,7 +22,7 @@
 
 (in-package :jscl)
 
-(defvar *version* "0.0.2")
+(defvar *version* "0.3.0")
 
 (defvar *base-directory*
   (or #.*load-pathname* *default-pathname-defaults*))
@@ -62,6 +62,7 @@
     ("read"          :both)
     ("defstruct"     :both)
     ("lambda-list"   :both)
+    ("conditions"    :both)
     ("backquote"     :both)
     ("compiler"
      ("codegen"      :both)
@@ -144,8 +145,6 @@
     ;; not collide with the compiler itself.
     (late-compile
      `(progn
-        (progn ,@(mapcar (lambda (s) `(%intern-symbol (%js-vref ,(string (cdr s)))))
-                         (remove-if-not #'symbolp *literal-table* :key #'car)))
         (setq *literal-table* ',*literal-table*)
         (setq *variable-counter* ,*variable-counter*)
         (setq *gensym-counter* ,*gensym-counter*)))
