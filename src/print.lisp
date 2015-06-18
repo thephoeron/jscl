@@ -352,6 +352,7 @@
             (setq res (concat res (string c))))
         (incf i)))
 
+
     (case destination
       ((t)
        (write-string res)

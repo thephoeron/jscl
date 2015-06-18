@@ -34,6 +34,13 @@
 (define-js-macro method-call (x method &rest args)
   `(call (get ,x ,method) ,@args))
 
+(define-js-macro nargs ()
+  `(- (get |arguments| |length|) 1))
+
+(define-js-macro arg (n)
+  `(property |arguments| (+ ,n 1)))
+
+
 ;;; A Form can return a multiple values object calling VALUES, like
 ;;; values(arg1, arg2, ...). It will work in any context, as well as
 ;;; returning an individual object. However, if the special variable
@@ -271,18 +278,18 @@
     (block nil
       ;; Special case: a positive exact number of arguments.
       (when (and (< 0 min) (eql min max))
-        (return `(call |checkArgs| |nargs| ,min)))
+        (return `(call |checkArgs| (nargs) ,min)))
       ;; General case:
       `(progn
-         ,(when (< 0 min)     `(call |checkArgsAtLeast| |nargs| ,min))
-         ,(when (numberp max) `(call |checkArgsAtMost|  |nargs| ,max))))))
+         ,(when (< 0 min)     `(call |checkArgsAtLeast| (nargs) ,min))
+         ,(when (numberp max) `(call |checkArgsAtMost|  (nargs) ,max))))))
 
 (defun compile-lambda-optional (ll)
   (let* ((optional-arguments (ll-optional-arguments-canonical ll))
 	 (n-required-arguments (length (ll-required-arguments ll)))
 	 (n-optional-arguments (length optional-arguments)))
     (when optional-arguments
-      `(switch |nargs|
+      `(switch (nargs)
                ,@(with-collect
                   (dotimes (idx n-optional-arguments)
                     (let ((arg (nth idx optional-arguments)))
@@ -304,10 +311,10 @@
         `(progn
            (var (,js!rest ,(convert nil)))
            (var i)
-           (for ((= i (- |nargs| 1))
+           (for ((= i (- (nargs) 1))
                  (>= i ,(+ n-required-arguments n-optional-arguments))
                  (post-- i))
-                (= ,js!rest (object "car" (property |arguments| (+ i 2))
+                (= ,js!rest (object "car" (arg i)
                                     "cdr" ,js!rest))))))))
 
 (defun compile-lambda-parse-keywords (ll)
@@ -336,18 +343,16 @@
                   ;; ((keyword-name var) init-form svar)
                   `(progn
                      (for ((= i ,(+ n-required-arguments n-optional-arguments))
-                           (< i |nargs|)
+                           (< i (nargs))
                            (+= i 2))
                           ;; ....
-                          (if (=== (property |arguments| (+ i 2))
-                                   ,(convert keyword-name))
+                          (if (=== (arg i) ,(convert keyword-name))
                               (progn
-                                (= ,(translate-variable var)
-                                   (property |arguments| (+ i 3)))
+                                (= ,(translate-variable var) (arg (+ i 1)))
                                 ,(when svar `(= ,(translate-variable svar)
                                                 ,(convert t)))
                                 (break))))
-                     (if (== i |nargs|)
+                     (if (== i (nargs))
                          (= ,(translate-variable var) ,(convert initform)))))))
          (when keyword-arguments
            `(progn
@@ -358,19 +363,16 @@
        ,(when keyword-arguments
          `(progn
             (var (start ,(+ n-required-arguments n-optional-arguments)))
-            (if (== (% (- |nargs| start) 2) 1)
+            (if (== (% (- (nargs) start) 2) 1)
                 (throw "Odd number of keyword arguments."))
-            (for ((= i start) (< i |nargs|) (+= i 2))
+            (for ((= i start) (< i (nargs)) (+= i 2))
                  (if (and ,@(mapcar (lambda (keyword-argument)
                                  (destructuring-bind ((keyword-name var) &optional initform svar)
                                      keyword-argument
                                    (declare (ignore var initform svar))
-                                   `(!== (property |arguments| (+ i 2)) ,(convert keyword-name))))
+                                   `(!== (arg i) ,(convert keyword-name))))
                                keyword-arguments))
-                     (throw (+ "Unknown keyword argument "
-                               (property
-                                (property |arguments| (+ i 2))
-                                "name"))))))))))
+                     (throw (+ "Unknown keyword argument " (property (arg i) "name"))))))))))
 
 (defun parse-lambda-list (ll)
   (values (ll-required-arguments ll)
@@ -422,9 +424,9 @@
                                     keyword-arguments
                                     (ll-svars ll)))))
         (lambda-name/docstring-wrapper name documentation
-         `(function (|values| |nargs| ,@(mapcar (lambda (x)
-                                                  (translate-variable x))
-                                                (append required-arguments optional-arguments)))
+         `(function (|values| ,@(mapcar (lambda (x)
+					  (translate-variable x))
+					(append required-arguments optional-arguments)))
                      ;; Check number of arguments
                     ,(lambda-check-argument-count n-required-arguments
                                                   n-optional-arguments
@@ -891,7 +893,7 @@
 (define-compilation multiple-value-call (func-form &rest forms)
   `(selfcall
     (var (func ,(convert func-form)))
-    (var (args ,(vector (if *multiple-value-p* '|values| '|pv|) 0)))
+    (var (args ,(vector (if *multiple-value-p* '|values| '|pv|))))
     (return
       (selfcall
        (var (|values| |mv|))
@@ -904,7 +906,6 @@
                                  (in "multiple-value" vs))
                             (= args (method-call args "concat" vs))
                             (method-call args "push" vs))))))
-       (= (property args 1) (- (property args "length") 2))
        (return (method-call func "apply" |window| args))))))
 
 (define-compilation multiple-value-prog1 (first-form &rest forms)
@@ -1153,9 +1154,8 @@
     (return (call (if (=== (typeof f) "function")
                       f
                       (get f "fvalue"))
-                  ,@(list* (if *multiple-value-p* '|values| '|pv|)
-                           (length args)
-                           (mapcar #'convert args))))))
+                  ,@(cons (if *multiple-value-p* '|values| '|pv|)
+			  (mapcar #'convert args))))))
 
 (define-raw-builtin apply (func &rest args)
   (if (null args)
@@ -1163,22 +1163,20 @@
       (let ((args (butlast args))
             (last (car (last args))))
         `(selfcall
-           (var (f ,(convert func)))
-           (var (args ,(list-to-vector
-                        (list* (if *multiple-value-p* '|values| '|pv|)
-                               (length args)
-                               (mapcar #'convert args)))))
-           (var (tail ,(convert last)))
-           (while (!= tail ,(convert nil))
-             (method-call args "push" (get tail "car"))
-             (post++ (property args 1))
-             (= tail (get tail "cdr")))
-           (return (method-call (if (=== (typeof f) "function")
-                                    f
-                                    (get f "fvalue"))
-                                "apply"
-                                this
-                                args))))))
+	  (var (f ,(convert func)))
+	  (var (args ,(list-to-vector
+		       (cons (if *multiple-value-p* '|values| '|pv|)
+			     (mapcar #'convert args)))))
+	  (var (tail ,(convert last)))
+	  (while (!= tail ,(convert nil))
+	    (method-call args "push" (get tail "car"))
+	    (= tail (get tail "cdr")))
+	  (return (method-call (if (=== (typeof f) "function")
+				   f
+				   (get f "fvalue"))
+			       "apply"
+			       this
+			       args))))))
 
 (define-builtin js-eval (string)
   (if *multiple-value-p*
@@ -1315,7 +1313,8 @@
          (g (if (=== (typeof f) "function") f (get f "fvalue")))
          (o ,object))
     (for-in (key o)
-            (call g ,(if *multiple-value-p* '|values| '|pv|) 1 (property o key)))
+            (call g ,(if *multiple-value-p* '|values| '|pv|)
+		  (property o key)))
     (return ,(convert nil))))
 
 (define-compilation %js-vref (var)
@@ -1419,9 +1418,8 @@
      (values form nil))))
 
 (defun compile-funcall (function args)
-  (let* ((arglist (list* (if *multiple-value-p* '|values| '|pv|)
-                         (length args)
-                         (mapcar #'convert args))))
+  (let* ((arglist (cons (if *multiple-value-p* '|values| '|pv|)
+			(mapcar #'convert args))))
     (unless (or (symbolp function)
                 (and (consp function)
                      (member (car function) '(lambda oget))))
